@@ -1,6 +1,6 @@
+import json
 import os
 import re
-import json
 import uuid
 from urllib.parse import urlsplit
 import docker
@@ -80,12 +80,19 @@ def start_download(url: str = Form(...)):
         "--no-colors",
         "--no-exec",
         "--no-config-locations",
-        "--print",
-        "before_dl:[title] %(title)s",
+        # Wznawianie i obsługa zerwanych fragmentów
+        "--continue",
+        "--retries", "20",
+        "--fragment-retries", "50",
+        "--retry-sleep", "fragment:exp=1:1.5:10",
+        "--socket-timeout", "30",
+        "--extractor-retries", "5",
+        "--file-access-retries", "5",
+        # Odczyt tytułu
+        "--print", "before_dl:[title] %(title)s",
         "--no-simulate",
         "--no-quiet",
-        "-o",
-        "/downloads/%(title)s.%(ext)s",
+        "-o", "/downloads/%(title)s.%(ext)s",
         "--",
         url,
     ]
@@ -161,7 +168,18 @@ def generate_sse_stream(container_id: str):
                     )
                     yield f"event: progress\ndata: {payload}\n\n"
 
-        yield "event: end\ndata: done\n\n"
+        # Weryfikacja kodu zakończenia kontenera
+        try:
+            container.reload()
+            exit_code = container.attrs.get("State", {}).get("ExitCode", 0)
+        except Exception:
+            exit_code = 0
+
+        if exit_code != 0:
+            yield f"event: fail\ndata: {json.dumps({'error': f'Błąd pobierania (kod wyjścia {exit_code})'})}\n\n"
+        else:
+            yield "event: end\ndata: done\n\n"
+
     finally:
         try:
             c = client.containers.get(container_id)
