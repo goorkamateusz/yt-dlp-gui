@@ -7,6 +7,5 @@ services:
     environment:
       - HOST_DOWNLOAD_PATH=${HOST_DOWNLOAD_PATH:-/output}
     volumes:
-      # Dostęp do gniazda Dockera – pozwala kontenerowi odpalać inne kontenery na hoście
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
