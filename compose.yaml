@@ -3,9 +3,19 @@ services:
     build: .
     container_name: ytdlp-gui
     ports:
-      - "${WEB_PORT:-8000}:8000"
+      - "${WEB_PORT:-10130}:8000"
     environment:
-      - HOST_DOWNLOAD_PATH=${HOST_DOWNLOAD_PATH:-/output}
+      HOST_DOWNLOAD_PATH: ${HOST_DOWNLOAD_PATH:-/output}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ytdlp_data:/data
     restart: unless-stopped
+    labels:
+      - homepage.group=Wideo
+      - homepage.name=YT_DLP
+      - homepage.icon=yt-dlp.png
+      - homepage.description=Pobieranie wideo z YT, CDA itp.
+      - homepage.href=http://192.168.100.121:10130
+
+volumes:
+  ytdlp_data: {}

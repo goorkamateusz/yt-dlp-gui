@@ -12,13 +12,20 @@
     input[type="text"]:focus { border-color: #0070f3; }
     button { padding: 12px 24px; background: #0070f3; border: none; border-radius: 6px; color: #fff; font-weight: 500; cursor: pointer; transition: background 0.2s; white-space: nowrap; }
     button:hover { background: #005bb5; }
-    button:disabled { background: #444; cursor: not-allowed; }
+    button:disabled { background: #444; color: #888; cursor: not-allowed; }
+
+    /* Przyciski akcji zadania */
+    .btn-action { padding: 6px 12px; font-size: 12px; border-radius: 4px; font-weight: 600; cursor: pointer; border: none; }
+    .btn-retry { background: #eab308; color: #000; }
+    .btn-retry:hover { background: #ca8a04; }
+    .btn-abandon { background: #ef4444; color: #fff; }
+    .btn-abandon:hover { background: #dc2626; }
 
     #error-banner { display: none; padding: 12px; margin-bottom: 20px; background: #3a1111; border: 1px solid #7a2222; border-radius: 6px; color: #ff8080; font-size: 14px; }
 
     .card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
     .video-title { font-size: 16px; font-weight: 600; color: #fff; margin-bottom: 8px; word-break: break-word; line-height: 1.4; }
-    .job-meta { display: flex; justify-content: space-between; font-size: 13px; color: #888; margin-bottom: 12px; }
+    .job-meta { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: #888; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
 
     .progress-track { width: 100%; height: 16px; background: #2a2a2a; border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
     .progress-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #0070f3, #00c6ff); border-radius: 8px; transition: width 0.3s ease; }
@@ -52,6 +59,7 @@
     const jobsContainer = document.getElementById('jobs-container');
 
     const activeStreams = new Set();
+    let cachedJobs = [];
 
     function showError(msg) {
       errBanner.textContent = msg;
@@ -71,8 +79,15 @@
       card.innerHTML = `
         <div class="video-title" id="title-${id}"></div>
         <div class="job-meta">
-          <span>Kontener: <strong style="color:#00c6ff;">${name}</strong></span>
-          <span id="status-${id}">Nawiązywanie połączenia...</span>
+          <div>
+            Kontener: <strong style="color:#00c6ff;">${name}</strong>
+            <span id="attempts-${id}" style="margin-left: 8px; color: #888;">(Próba 1/10)</span>
+          </div>
+          <div style="display:flex; gap: 8px; align-items:center;">
+            <span id="status-${id}">Inicjalizacja...</span>
+            <button id="retry-btn-${id}" class="btn-action btn-retry" style="display:none;" onclick="triggerRetry('${id}')">Wznów</button>
+            <button id="abandon-btn-${id}" class="btn-action btn-abandon" style="display:none;" onclick="triggerAbandon('${id}')">Porzuć</button>
+          </div>
         </div>
         <div class="progress-track">
           <div id="fill-${id}" class="progress-fill"></div>
@@ -92,6 +107,68 @@
       document.getElementById(`title-${id}`).textContent = titleDisplay;
     }
 
+    function updateCardUI(job) {
+      const id = job.job_id;
+      createJobCard(id, job.container_name, job.title);
+
+      const statusEl = document.getElementById(`status-${id}`);
+      const retryBtn = document.getElementById(`retry-btn-${id}`);
+      const abandonBtn = document.getElementById(`abandon-btn-${id}`);
+      const attemptsEl = document.getElementById(`attempts-${id}`);
+      const titleEl = document.getElementById(`title-${id}`);
+
+      if (job.title && titleEl && titleEl.textContent.includes("Pobieranie informacji")) {
+        titleEl.textContent = job.title;
+      }
+      if (attemptsEl) attemptsEl.textContent = `(Próba ${job.attempts || 1}/10)`;
+
+      const now = Math.floor(Date.now() / 1000);
+      const remaining = (job.next_retry_at || 0) - now;
+
+      if (job.status === "running") {
+        if (!statusEl.textContent.includes("Pobieranie") && !statusEl.textContent.includes("Scalanie")) {
+          statusEl.textContent = "Pobieranie...";
+        }
+        statusEl.style.color = "#00c6ff";
+        if (retryBtn) retryBtn.style.display = "none";
+        if (abandonBtn) abandonBtn.style.display = "inline-block";
+        connectSSE(id);
+      } else if (job.status === "interrupted") {
+        statusEl.style.color = "#eab308";
+        if (abandonBtn) abandonBtn.style.display = "inline-block";
+        if (retryBtn) {
+          retryBtn.style.display = "inline-block";
+          if (remaining > 0) {
+            const m = Math.floor(remaining / 60);
+            const s = remaining % 60;
+            const timeStr = `${m}:${s.toString().padStart(2, '0')}`;
+            statusEl.textContent = `Przerwano (auto za ${timeStr})`;
+            retryBtn.disabled = true;
+            retryBtn.textContent = `Wznów (${timeStr})`;
+          } else {
+            statusEl.textContent = "Przerwano (gotowe)";
+            retryBtn.disabled = false;
+            retryBtn.textContent = "Wznów teraz";
+          }
+        }
+      } else if (job.status === "failed") {
+        statusEl.textContent = "Błąd: limit 10 prób";
+        statusEl.style.color = "#ef4444";
+        if (retryBtn) retryBtn.style.display = "none";
+        if (abandonBtn) abandonBtn.style.display = "inline-block";
+      } else if (job.status === "abandoned") {
+        statusEl.textContent = "Porzucono (.part usunięty)";
+        statusEl.style.color = "#777";
+        if (retryBtn) retryBtn.style.display = "none";
+        if (abandonBtn) abandonBtn.style.display = "none";
+      } else if (job.status === "completed") {
+        statusEl.textContent = "Zakończono!";
+        statusEl.style.color = "#22c55e";
+        if (retryBtn) retryBtn.style.display = "none";
+        if (abandonBtn) abandonBtn.style.display = "none";
+      }
+    }
+
     function connectSSE(id) {
       if (activeStreams.has(id)) return;
       activeStreams.add(id);
@@ -108,16 +185,14 @@
       const evtSource = new EventSource(`/stream/${id}`);
 
       evtSource.onopen = () => {
-        if (statusEl.textContent.includes("połączenia") || statusEl.textContent.includes("Inicjalizacja")) {
+        if (statusEl.textContent.includes("Inicjalizacja")) {
           statusEl.textContent = "Pobieranie...";
         }
       };
 
       evtSource.addEventListener("title", (event) => {
         const d = JSON.parse(event.data);
-        if (d.title) {
-          titleEl.textContent = d.title;
-        }
+        if (d.title) titleEl.textContent = d.title;
       });
 
       evtSource.addEventListener("progress", (event) => {
@@ -127,7 +202,6 @@
         szEl.textContent = d.size;
         spdEl.textContent = d.speed;
         etaEl.textContent = d.eta;
-
         if (statusEl.textContent !== "Scalanie FFmpeg..." && statusEl.textContent !== "Zakończono!") {
           statusEl.textContent = "Pobieranie...";
         }
@@ -143,35 +217,63 @@
       });
 
       evtSource.addEventListener("log", (event) => {
-        logEl.textContent += event.data + '\\n';
+        logEl.textContent += event.data + '\n';
         logEl.scrollTop = logEl.scrollHeight;
+      });
+
+      evtSource.addEventListener("fail", () => {
+        evtSource.close();
+        activeStreams.delete(id);
+        loadActiveJobs();
       });
 
       evtSource.addEventListener("end", () => {
         statusEl.textContent = "Zakończono!";
+        statusEl.style.color = "#22c55e";
         fillEl.style.width = '100%';
         pctEl.textContent = '100%';
         evtSource.close();
         activeStreams.delete(id);
+        loadActiveJobs();
       });
 
       evtSource.onerror = () => {
-        statusEl.textContent = "Zadanie zakończone.";
         evtSource.close();
         activeStreams.delete(id);
+        loadActiveJobs();
       };
     }
 
     async function loadActiveJobs() {
       try {
         const res = await fetch("/active-jobs");
-        const jobs = await res.json();
-        jobs.forEach(job => {
-          createJobCard(job.container_id, job.container_name, job.title);
-          connectSSE(job.container_id);
-        });
+        cachedJobs = await res.json();
+        cachedJobs.forEach(job => updateCardUI(job));
       } catch (err) {
         console.error("Błąd podczas odczytu zadań", err);
+      }
+    }
+
+    async function triggerRetry(jobId) {
+      try {
+        const res = await fetch(`/retry-job/${jobId}`, { method: "POST" });
+        if (!res.ok) {
+          const err = await res.json();
+          showError(err.detail || "Błąd podczas wznawiania");
+        }
+        loadActiveJobs();
+      } catch (err) {
+        showError("Błąd sieci.");
+      }
+    }
+
+    async function triggerAbandon(jobId) {
+      if (!confirm("Czy na pewno chcesz porzucić to zadanie i usunąć plik .part?")) return;
+      try {
+        await fetch(`/abandon-job/${jobId}`, { method: "POST" });
+        loadActiveJobs();
+      } catch (err) {
+        showError("Błąd podczas porzucania zadania.");
       }
     }
 
@@ -181,7 +283,6 @@
       if (!url) return;
 
       submitBtn.disabled = true;
-
       const formData = new FormData();
       formData.append("url", url);
 
@@ -195,8 +296,9 @@
 
         const data = await res.json();
         urlInput.value = "";
-        createJobCard(data.container_id, data.container_name, null);
-        connectSSE(data.container_id);
+        createJobCard(data.job_id, data.container_name, null);
+        connectSSE(data.job_id);
+        loadActiveJobs();
       } catch (err) {
         showError("Błąd sieci podczas wysyłania żądania.");
       } finally {
@@ -204,6 +306,17 @@
       }
     };
 
+    // Pętla odliczająca sekundy na przyciskach i w komunikatach cooldownu (15 min)
+    setInterval(() => {
+      if (cachedJobs.length > 0) {
+        cachedJobs.forEach(job => {
+          if (job.status === "interrupted") updateCardUI(job);
+        });
+      }
+    }, 1000);
+
+    // Synchronizacja z serwerem co 6 sekund
+    setInterval(loadActiveJobs, 6000);
     window.addEventListener('DOMContentLoaded', loadActiveJobs);
   </script>
 </body>
